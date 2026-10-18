@@ -1,0 +1,75 @@
+---
+- name: Baseline hardening for a Linux host (RHEL/Amazon Linux family)
+  hosts: lab
+  become: true
+  vars:
+    ssh_config_path: /etc/ssh/sshd_config
+    ssh_settings:
+      PermitRootLogin: "no"
+      PasswordAuthentication: "no"
+      X11Forwarding: "no"
+      MaxAuthTries: "3"
+      ClientAliveInterval: "300"
+      ClientAliveCountMax: "2"
+    sysctl_settings:
+      net.ipv4.conf.all.accept_redirects: "0"
+      net.ipv4.conf.all.send_redirects: "0"
+      net.ipv4.conf.all.rp_filter: "1"
+      net.ipv4.icmp_echo_ignore_broadcasts: "1"
+      net.ipv4.tcp_syncookies: "1"
+    unwanted_packages:
+      - telnet
+      - rsh
+      - ypbind
+
+  tasks:
+    - name: Apply SSH hardening settings
+      ansible.builtin.lineinfile:
+        path: "{{ ssh_config_path }}"
+        regexp: '^#?\s*{{ item.key }}\b'
+        line: "{{ item.key }} {{ item.value }}"
+        validate: "/usr/sbin/sshd -t -f %s"
+        mode: "0600"
+      loop: "{{ ssh_settings | dict2items }}"
+      notify: Restart sshd
+
+    - name: Apply kernel network sysctl settings
+      ansible.posix.sysctl:
+        name: "{{ item.key }}"
+        value: "{{ item.value }}"
+        sysctl_file: /etc/sysctl.d/99-hardening.conf
+        reload: true
+      loop: "{{ sysctl_settings | dict2items }}"
+
+    - name: Remove insecure legacy packages
+      ansible.builtin.package:
+        name: "{{ unwanted_packages }}"
+        state: absent
+
+    - name: Ensure auditd is installed
+      ansible.builtin.package:
+        name: audit
+        state: present
+
+    - name: Ensure auditd is enabled and running
+      ansible.builtin.service:
+        name: auditd
+        enabled: true
+        state: started
+
+    - name: Set restrictive permissions on sensitive files
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        mode: "{{ item.mode }}"
+        owner: root
+        group: root
+      loop:
+        - { path: /etc/passwd, mode: "0644" }
+        - { path: /etc/shadow, mode: "0000" }
+        - { path: /etc/ssh/sshd_config, mode: "0600" }
+
+  handlers:
+    - name: Restart sshd
+      ansible.builtin.service:
+        name: sshd
+        state: restarted

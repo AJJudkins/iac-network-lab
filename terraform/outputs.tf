@@ -11,8 +11,9 @@ output "subnet_ids" {
 }
 
 output "instance_ids" {
+  description = "Empty unless create_instances = true"
   value = {
-    web = aws_instance.web.id
-    app = aws_instance.app.id
+    web = one(aws_instance.web[*].id)
+    app = one(aws_instance.app[*].id)
   }
 }

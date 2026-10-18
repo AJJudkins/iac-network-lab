@@ -1,12 +1,21 @@
 provider "aws" {
   region = var.region
+
+  default_tags {
+    tags = {
+      Project   = "iac-network-lab"
+      ManagedBy = "terraform"
+    }
+  }
 }
 
 data "aws_availability_zones" "available" {
   state = "available"
 }
 
+# Only looked up when instances are enabled (avoids an AMI API call for a network-only plan).
 data "aws_ami" "al2023" {
+  count       = var.create_instances ? 1 : 0
   most_recent = true
   owners      = ["amazon"]
   filter {
@@ -19,6 +28,12 @@ resource "aws_vpc" "lab" {
   cidr_block           = var.vpc_cidr
   enable_dns_hostnames = true
   tags                 = { Name = "${var.name}-vpc" }
+}
+
+# Default-deny: strip all rules from the VPC's default security group so nothing
+# can accidentally rely on it. Real tiers use the explicit groups below.
+resource "aws_default_security_group" "default" {
+  vpc_id = aws_vpc.lab.id
 }
 
 resource "aws_internet_gateway" "igw" {
@@ -196,19 +211,16 @@ resource "aws_security_group" "web" {
   description = "Web tier: HTTP/HTTPS from internet"
   vpc_id      = aws_vpc.lab.id
 
-  ingress {
-    description = "HTTPS"
-    from_port   = 443
-    to_port     = 443
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-  ingress {
-    description = "HTTP"
-    from_port   = 80
-    to_port     = 80
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+  # Default-deny: with the default web_ingress_cidrs = [] no inbound rule exists at all.
+  dynamic "ingress" {
+    for_each = toset([443, 80])
+    content {
+      description = "HTTP(S) from allowed CIDRs"
+      from_port   = ingress.value
+      to_port     = ingress.value
+      protocol    = "tcp"
+      cidr_blocks = var.web_ingress_cidrs
+    }
   }
   egress {
     description = "To app tier"
@@ -244,7 +256,8 @@ resource "aws_security_group" "app" {
 
 # ---------- EC2 pair ----------
 resource "aws_instance" "web" {
-  ami                    = data.aws_ami.al2023.id
+  count                  = var.create_instances ? 1 : 0
+  ami                    = data.aws_ami.al2023[0].id
   instance_type          = var.instance_type
   subnet_id              = aws_subnet.public.id
   vpc_security_group_ids = [aws_security_group.web.id]
@@ -258,7 +271,8 @@ resource "aws_instance" "web" {
 }
 
 resource "aws_instance" "app" {
-  ami                    = data.aws_ami.al2023.id
+  count                  = var.create_instances ? 1 : 0
+  ami                    = data.aws_ami.al2023[0].id
   instance_type          = var.instance_type
   subnet_id              = aws_subnet.private.id
   vpc_security_group_ids = [aws_security_group.app.id]
